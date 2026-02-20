@@ -14,14 +14,20 @@ void main() async {
     print('Error: api_keys.env not found. Copy api_keys.env.example to api_keys.env.');
     exit(1);
   }
-  final key = _parseEnv(envFile)['MAPS_API_KEY']?.trim();
+  final env = _parseEnv(envFile);
+  final key = env['MAPS_API_KEY']?.trim();
   if (key == null || key.isEmpty) {
     print('Error: MAPS_API_KEY is missing in api_keys.env.');
     exit(1);
   }
+  final defines = ['--dart-define=MAPS_API_KEY=$key'];
+  final proxy = env['FIREBASE_PROXY_URL']?.trim();
+  if (proxy != null && proxy.isNotEmpty) {
+    defines.add('--dart-define=FIREBASE_PROXY_URL=$proxy');
+  }
   final process = await Process.start(
     'flutter',
-    ['run', '-d', 'chrome', '--dart-define=MAPS_API_KEY=$key'],
+    ['run', '-d', 'chrome', ...defines],
     mode: ProcessStartMode.inheritStdio,
     workingDirectory: root,
     runInShell: true,

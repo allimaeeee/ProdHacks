@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/maps-proxy.js": {
+      "maxDuration": 30
+    }
+  }
+}

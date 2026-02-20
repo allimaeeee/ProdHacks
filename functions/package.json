@@ -1,0 +1,9 @@
+{
+  "name": "prodhacks-proxy",
+  "description": "Proxy for Google Maps APIs (fixes CORS and geolocation issues on web)",
+  "main": "index.js",
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "firebase-functions": "^4.5.0"
+  }
+}

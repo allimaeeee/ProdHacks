@@ -47,3 +47,4 @@ app.*.map.json
 # API keys (never commit real keys)
 api_keys.env
 /ios/Flutter/GoogleMapsKey.xcconfig
+.vercel

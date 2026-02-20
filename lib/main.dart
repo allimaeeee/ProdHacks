@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -8,6 +9,77 @@ import 'package:http/http.dart' as http;
 
 import 'src/app_config.dart';
 import 'src/maps_apis.dart';
+
+/// Bottom sheet showing nearby parking places.
+Future<void> _showParkingSheet(
+  BuildContext context, {
+  required LatLng location,
+  required String destinationName,
+  void Function(String)? onGetDirections,
+}) async {
+  final parking = await fetchNearbyParking(location, radius: 800);
+  if (!context.mounted) return;
+  showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    builder: (ctx) => DraggableScrollableSheet(
+      initialChildSize: 0.5,
+      minChildSize: 0.25,
+      maxChildSize: 0.9,
+      expand: false,
+      builder: (_, scrollController) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Parking near $destinationName',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            if (onGetDirections != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8, bottom: 8),
+                child: FilledButton.icon(
+                  onPressed: () {
+                    Navigator.of(ctx).pop();
+                    onGetDirections(destinationName);
+                  },
+                  icon: const Icon(Icons.directions),
+                  label: const Text('Get directions'),
+                ),
+              ),
+            Expanded(
+              child: parking.isEmpty
+                  ? Center(
+                      child: Text(
+                        'No parking found nearby. Enable Places API in Google Cloud.',
+                        style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                        textAlign: TextAlign.center,
+                      ),
+                    )
+                  : ListView.builder(
+                      controller: scrollController,
+                      itemCount: parking.length,
+                      itemBuilder: (_, i) {
+                        final p = parking[i];
+                        return ListTile(
+                          leading: const Icon(Icons.local_parking),
+                          title: Text(p.name),
+                          subtitle: p.address.isNotEmpty ? Text(p.address) : null,
+                          onTap: () {
+                            // Could center map on parking - caller would need to handle
+                            Navigator.of(ctx).pop();
+                          },
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
 
 void main() {
   runApp(const MyApp());
@@ -106,22 +178,36 @@ class _MapPageState extends State<MapPage> {
       _openDirections(initialDestination: prediction.description);
       return;
     }
-    final details = await fetchPlaceDetails(prediction.placeId);
+    var details = await fetchPlaceDetails(prediction.placeId);
+    if (details == null || !isInUS(details.latLng)) {
+      var coords = pittsburghAddressFallback(prediction.description) ?? await geocodeAddress(prediction.description);
+      if (coords == null) coords = pittsburghAddressFallback('${prediction.description}, Pittsburgh, PA, USA') ?? await geocodeAddress('${prediction.description}, USA');
+      if (coords != null) {
+        final parts = coords.split(',');
+        if (parts.length == 2) {
+          details = PlaceDetails(
+            latLng: LatLng(double.parse(parts[0]), double.parse(parts[1])),
+            formattedAddress: prediction.description,
+          );
+        }
+      }
+    }
     if (details == null || !mounted) return;
+    final d = details!;
     setState(() {
       _markers.clear();
       _markers.add(
         Marker(
           markerId: MarkerId(prediction.placeId),
-          position: details.latLng,
-          infoWindow: InfoWindow(title: details.formattedAddress),
+          position: d.latLng,
+          infoWindow: InfoWindow(title: d.formattedAddress),
         ),
       );
     });
     final controller = _mapController;
     if (controller != null) {
       await controller.animateCamera(
-        CameraUpdate.newLatLngZoom(details.latLng, 14),
+        CameraUpdate.newLatLngZoom(d.latLng, 14),
       );
     }
   }
@@ -143,38 +229,21 @@ class _MapPageState extends State<MapPage> {
     }
     setState(() => _searching = true);
     try {
-      final uri = Uri.parse(
-        'https://maps.googleapis.com/maps/api/geocode/json'
-        '?address=${Uri.encodeComponent(query)}'
-        '&key=$kMapsApiKey',
-      );
-      final response = await http.get(uri);
-      if (response.statusCode != 200) throw Exception('Geocoding failed');
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      final status = data['status'] as String?;
-      if (status != 'OK') {
-        throw Exception(data['error_message'] ?? 'No results');
-      }
-      final results = data['results'] as List<dynamic>?;
-      if (results == null || results.isEmpty) throw Exception('No results');
-      final first = results.first as Map<String, dynamic>;
-      final geometry = first['geometry'] as Map<String, dynamic>?;
-      final location = geometry?['location'] as Map<String, dynamic>?;
-      if (location == null) throw Exception('Invalid result');
-      final lat = (location['lat'] as num).toDouble();
-      final lng = (location['lng'] as num).toDouble();
-      final placeId = first['place_id'] as String? ?? 'search';
-      final placeLatLng = LatLng(lat, lng);
+      var coords = pittsburghAddressFallback(query) ?? await geocodeAddress(query);
+      if (coords == null) coords = pittsburghAddressFallback('$query, Pittsburgh, PA, USA') ?? await geocodeAddress('$query, USA');
+      if (coords == null) throw Exception('No results');
+      final parts = coords.split(',');
+      if (parts.length != 2) throw Exception('Invalid result');
+      final placeLatLng = LatLng(double.parse(parts[0]), double.parse(parts[1]));
+      if (!isInUS(placeLatLng)) throw Exception('Address resolved outside US. Try adding ", USA"');
       if (!mounted) return;
       setState(() {
         _markers.clear();
         _markers.add(
           Marker(
-            markerId: MarkerId(placeId),
+            markerId: const MarkerId('search'),
             position: placeLatLng,
-            infoWindow: InfoWindow(
-              title: first['formatted_address'] as String? ?? query,
-            ),
+            infoWindow: InfoWindow(title: query),
           ),
         );
       });
@@ -185,13 +254,17 @@ class _MapPageState extends State<MapPage> {
         );
       }
       if (!mounted) return;
-      final formattedAddr = first['formatted_address'] as String? ?? query;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Found: $formattedAddr'),
+          content: Text('Found: $query'),
           action: SnackBarAction(
-            label: 'Get directions',
-            onPressed: () => _openDirections(initialDestination: formattedAddr),
+            label: 'Parking nearby',
+            onPressed: () => _showParkingSheet(
+              context,
+              location: placeLatLng,
+              destinationName: query,
+              onGetDirections: (d) => _openDirections(initialDestination: d),
+            ),
           ),
           duration: const Duration(seconds: 5),
         ),
@@ -213,7 +286,7 @@ class _MapPageState extends State<MapPage> {
       builder: (ctx) => _DirectionsSheet(
         initialDestination: initialDestination,
         locationBias: _userLocation,
-        onGetDirections: (String originStr, String destStr) async {
+        onGetDirections: (String originStr, String destStr, String destDisplayName) async {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (ctx.mounted) Navigator.of(ctx).maybePop();
           });
@@ -239,6 +312,23 @@ class _MapPageState extends State<MapPage> {
             final result = response.result!;
             final start = result.points.isNotEmpty ? result.points.first : null;
             final end = result.points.isNotEmpty ? result.points.last : null;
+            // Skip US check when we passed lat,lng (already validated during geocode/fallback)
+            final originIsCoords = RegExp(r'^-?\d+\.?\d*,-?\d+\.?\d*$').hasMatch(originStr.trim());
+            final destIsCoords = RegExp(r'^-?\d+\.?\d*,-?\d+\.?\d*$').hasMatch(destStr.trim());
+            if (!originIsCoords && start != null && !isInUS(start)) {
+              setState(() => _searching = false);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Start address resolved outside US. Try adding ", Pittsburgh, PA" or ", USA".'), duration: Duration(seconds: 6)),
+              );
+              return;
+            }
+            if (!destIsCoords && end != null && !isInUS(end)) {
+              setState(() => _searching = false);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Destination resolved outside US. Try adding ", Pittsburgh, PA" or ", USA".'), duration: Duration(seconds: 6)),
+              );
+              return;
+            }
             setState(() {
               _polylines.clear();
               _polylines.add(
@@ -295,10 +385,27 @@ class _MapPageState extends State<MapPage> {
               }
             }
             if (!mounted) return;
+            final isLongRoute = result.durationText.toLowerCase().contains('day');
+            final destPoint = result.points.isNotEmpty ? result.points.last : null;
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text('${result.durationText} • ${result.distanceText}'),
-                duration: const Duration(seconds: 4),
+                content: Text(
+                  isLongRoute
+                      ? 'Very long route (${result.durationText}). For local driving directions, enter a start address near your destination.'
+                      : '${result.durationText} • ${result.distanceText}',
+                ),
+                action: destPoint != null
+                    ? SnackBarAction(
+                        label: 'Parking nearby',
+                        onPressed: () => _showParkingSheet(
+                          context,
+                          location: destPoint,
+                          destinationName: destDisplayName,
+                          onGetDirections: null,
+                        ),
+                      )
+                    : null,
+                duration: Duration(seconds: isLongRoute ? 6 : 5),
               ),
             );
           } catch (e) {
@@ -438,7 +545,7 @@ class _MapPageState extends State<MapPage> {
                       ? Padding(
                           padding: const EdgeInsets.all(16),
                           child: Text(
-                            'No suggestions. Enable Places API (New) or Places API in Google Cloud.',
+                            'No suggestions. Enable Places API in Google Cloud. If using a proxy, try removing FIREBASE_PROXY_URL from api_keys.env.',
                             style: TextStyle(
                               fontSize: 13,
                               color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -498,7 +605,7 @@ class _DirectionsSheet extends StatefulWidget {
     this.locationBias,
   });
 
-  final void Function(String originStr, String destStr) onGetDirections;
+  final void Function(String originStr, String destStr, String destDisplayName) onGetDirections;
   final String? initialDestination;
   final LatLng? locationBias;
 
@@ -518,12 +625,15 @@ class _DirectionsSheetState extends State<_DirectionsSheet> {
   }
   List<AutocompletePrediction> _fromSuggestions = [];
   List<AutocompletePrediction> _toSuggestions = [];
-  bool _useMyLocation = true;
+  String? _fromPlaceId;
+  String? _toPlaceId;
+  bool _useMyLocation = false;
   Timer? _fromDebounce;
   Timer? _toDebounce;
 
   void _fetchFromSuggestions(String value) {
     _fromDebounce?.cancel();
+    setState(() => _fromPlaceId = null);
     if (value.trim().length < 2) {
       setState(() => _fromSuggestions = []);
       return;
@@ -537,6 +647,7 @@ class _DirectionsSheetState extends State<_DirectionsSheet> {
 
   void _fetchToSuggestions(String value) {
     _toDebounce?.cancel();
+    setState(() => _toPlaceId = null);
     if (value.trim().length < 2) {
       setState(() => _toSuggestions = []);
       return;
@@ -564,6 +675,17 @@ class _DirectionsSheetState extends State<_DirectionsSheet> {
         final pos = await Geolocator.getCurrentPosition(
           locationSettings: const LocationSettings(accuracy: LocationAccuracy.medium),
         );
+        final posLl = LatLng(pos.latitude, pos.longitude);
+        if (!isInUS(posLl)) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Your location appears outside the US. Enter start address manually (e.g. 5000 Forbes Ave, Pittsburgh, PA)'),
+              duration: Duration(seconds: 6),
+            ),
+          );
+          return;
+        }
         originStr = '${pos.latitude},${pos.longitude}';
       } catch (_) {
         if (!mounted) return;
@@ -580,8 +702,28 @@ class _DirectionsSheetState extends State<_DirectionsSheet> {
         );
         return;
       }
-      final geocoded = await geocodeAddress(fromText);
-      originStr = geocoded ?? fromText;
+      var geocoded = pittsburghAddressFallback(fromText) ?? await geocodeAddress(fromText);
+      if (geocoded == null && !RegExp(r',\s*(USA|US|Pittsburgh|PA)\b', caseSensitive: false).hasMatch(fromText)) {
+        geocoded = await geocodeAddress('$fromText, Pittsburgh, PA, USA');
+      }
+      if (geocoded == null) {
+        geocoded = pittsburghAddressFallback('$fromText, Pittsburgh, PA') ?? await geocodeAddress('$fromText, USA');
+      }
+      if (geocoded != null) {
+        final p = geocoded!.split(',');
+        if (p.length == 2) {
+          final ll = LatLng(double.tryParse(p[0]) ?? 0, double.tryParse(p[1]) ?? 0);
+          if (!isInUS(ll)) geocoded = null;
+        }
+      }
+      if (geocoded == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not find start address in US. Try "5000 Forbes Ave, Pittsburgh, PA, USA"'), duration: Duration(seconds: 6)),
+        );
+        return;
+      } else {
+        originStr = geocoded!;
+      }
     }
 
     final toText = _toController.text.trim();
@@ -591,9 +733,23 @@ class _DirectionsSheetState extends State<_DirectionsSheet> {
       );
       return;
     }
-    final destGeocoded = await geocodeAddress(toText);
-    final destStr = destGeocoded ?? toText;
-    widget.onGetDirections(originStr, destStr);
+    var destGeocoded = pittsburghAddressFallback(toText) ?? await geocodeAddress(toText);
+    if (destGeocoded == null) destGeocoded = pittsburghAddressFallback('$toText, Pittsburgh, PA, USA') ?? await geocodeAddress('$toText, USA');
+    if (destGeocoded != null) {
+      final p = destGeocoded.split(',');
+      if (p.length == 2) {
+        final ll = LatLng(double.tryParse(p[0]) ?? 0, double.tryParse(p[1]) ?? 0);
+        if (!isInUS(ll)) destGeocoded = null;
+      }
+    }
+    if (destGeocoded == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not find destination in US. Add ", USA" to the address.'), duration: Duration(seconds: 5)),
+      );
+      return;
+    }
+    final destStr = destGeocoded;
+    widget.onGetDirections(originStr, destStr, toText);
   }
 
   @override
@@ -678,7 +834,10 @@ class _DirectionsSheetState extends State<_DirectionsSheet> {
                         title: Text(p.description, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
                         onTap: () {
                           _fromController.text = p.description;
-                          setState(() => _fromSuggestions = []);
+                          setState(() {
+                            _fromSuggestions = [];
+                            _fromPlaceId = p.placeId;
+                          });
                         },
                       );
                     },
@@ -722,7 +881,10 @@ class _DirectionsSheetState extends State<_DirectionsSheet> {
                         title: Text(p.description, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
                         onTap: () {
                           _toController.text = p.description;
-                          setState(() => _toSuggestions = []);
+                          setState(() {
+                            _toSuggestions = [];
+                            _toPlaceId = p.placeId;
+                          });
                         },
                       );
                     },
