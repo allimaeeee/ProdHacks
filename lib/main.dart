@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
@@ -14,6 +15,7 @@ Future<void> _showParkingSheet(
   BuildContext context, {
   required LatLng location,
   required String destinationName,
+  void Function(ParkingPlace)? onSelectParking,
 }) async {
   final parking = await fetchNearbyParking(location, radius: 800);
   if (!context.mounted) return;
@@ -54,8 +56,8 @@ Future<void> _showParkingSheet(
                           title: Text(p.name),
                           subtitle: p.address.isNotEmpty ? Text(p.address) : null,
                           onTap: () {
-                            // Could center map on parking - caller would need to handle
-                            Navigator.of(ctx).pop();
+                            onSelectParking?.call(p);
+                            if (onSelectParking != null) Navigator.of(ctx).pop();
                           },
                         );
                       },
@@ -79,6 +81,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      debugShowCheckedModeBanner: false,
       title: 'Flutter Demo',
       theme: ThemeData(
         // This is the theme of your application.
@@ -96,9 +99,9 @@ class MyApp extends StatelessWidget {
         //
         // This works for code too, not just values: Most code changes can be
         // tested with just a hot reload.
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4285F4)),
       ),
-      home: const MapPage(title: 'Park Assist'),
+      home: const MapPage(title: 'InstaPark'),
     );
   }
 }
@@ -122,6 +125,9 @@ class _MapPageState extends State<MapPage> {
   bool _suggestionsLoading = false;
   Timer? _debounce;
   LatLng? _userLocation;
+  /// When set, the app bar shows a list icon to reopen the parking sheet for this destination.
+  LatLng? _parkingListLocation;
+  String? _parkingListDestinationName;
 
   // Fallback when location isn't available yet or is denied
   static const CameraPosition _fallbackPosition = CameraPosition(
@@ -198,11 +204,7 @@ class _MapPageState extends State<MapPage> {
         content: Text('Found: ${prediction.description}'),
         action: SnackBarAction(
           label: 'Parking nearby',
-          onPressed: () => _showParkingSheet(
-            context,
-            location: d.latLng,
-            destinationName: prediction.description,
-          ),
+          onPressed: () => _openParkingSheet(d.latLng, prediction.description),
         ),
         duration: const Duration(seconds: 5),
       ),
@@ -256,11 +258,7 @@ class _MapPageState extends State<MapPage> {
           content: Text('Found: $query'),
           action: SnackBarAction(
             label: 'Parking nearby',
-            onPressed: () => _showParkingSheet(
-              context,
-              location: placeLatLng,
-              destinationName: query,
-            ),
+            onPressed: () => _openParkingSheet(placeLatLng, query),
           ),
           duration: const Duration(seconds: 5),
         ),
@@ -273,6 +271,40 @@ class _MapPageState extends State<MapPage> {
     } finally {
       if (mounted) setState(() => _searching = false);
     }
+  }
+
+  void _openParkingSheet(LatLng location, String destinationName) {
+    setState(() {
+      _parkingListLocation = location;
+      _parkingListDestinationName = destinationName;
+    });
+    // Open sheet after frame so AppBar rebuilds and list icon is visible when sheet closes
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _showParkingSheet(
+        context,
+        location: location,
+        destinationName: destinationName,
+        onSelectParking: _onSelectParking,
+      );
+    });
+  }
+
+  void _onSelectParking(ParkingPlace p) {
+    setState(() {
+      _markers.removeWhere((m) => m.markerId.value.startsWith('parking_'));
+      _markers.add(
+        Marker(
+          markerId: MarkerId('parking_${p.latLng.latitude}_${p.latLng.longitude}'),
+          position: p.latLng,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueOrange),
+          infoWindow: InfoWindow(title: p.name, snippet: p.address),
+        ),
+      );
+    });
+    _mapController?.animateCamera(
+      CameraUpdate.newLatLngZoom(p.latLng, 16),
+    );
   }
 
   Future<void> _moveToCurrentPosition() async {
@@ -317,7 +349,27 @@ class _MapPageState extends State<MapPage> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: Text(widget.title.isEmpty ? 'Parking' : widget.title),
+        title: Text(
+          widget.title.isEmpty ? 'Parking' : widget.title,
+          style: GoogleFonts.alike(
+            fontSize: 22,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        actions: [
+          if (_parkingListLocation != null)
+            IconButton(
+              icon: const Icon(Icons.list),
+              tooltip: 'Parking list',
+              color: Theme.of(context).appBarTheme.iconTheme?.color ?? Theme.of(context).colorScheme.onSurface,
+              onPressed: () => _showParkingSheet(
+                context,
+                location: _parkingListLocation!,
+                destinationName: _parkingListDestinationName ?? 'Parking',
+                onSelectParking: _onSelectParking,
+              ),
+            ),
+        ],
       ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

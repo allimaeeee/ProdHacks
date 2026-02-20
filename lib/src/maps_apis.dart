@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 
@@ -225,7 +226,9 @@ Future<String?> geocodeAddress(String address) async {
   }
 }
 
-/// Fetches nearby parking places using Places API Nearby Search.
+/// Fetches nearby parking places using Google Places API (legacy) Nearby Search.
+/// Data source: https://developers.google.com/maps/documentation/places/web-service/search-nearby
+/// Results are sorted by distance from the given location (closest first).
 Future<List<ParkingPlace>> fetchNearbyParking(LatLng location, {int radius = 800}) async {
   if (kMapsApiKey.isEmpty) return [];
   final url = 'https://maps.googleapis.com/maps/api/place/nearbysearch/json'
@@ -252,6 +255,17 @@ Future<List<ParkingPlace>> fetchNearbyParking(LatLng location, {int radius = 800
       final address = map['vicinity'] as String? ?? '';
       list.add(ParkingPlace(name: name, address: address, latLng: LatLng(lat, lng)));
     }
+    list.sort((a, b) {
+      final distA = Geolocator.distanceBetween(
+        location.latitude, location.longitude,
+        a.latLng.latitude, a.latLng.longitude,
+      );
+      final distB = Geolocator.distanceBetween(
+        location.latitude, location.longitude,
+        b.latLng.latitude, b.latLng.longitude,
+      );
+      return distA.compareTo(distB);
+    });
     return list;
   } catch (_) {
     return [];
