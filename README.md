@@ -25,9 +25,8 @@ flutter run -d chrome
 
 Enable these APIs for your key in [Google Cloud Console](https://console.cloud.google.com/apis/library) (APIs & Services → Library):
 
-- **Geocoding API** – search and directions
-- **Places API (New)** or **Places API** – address/place autocomplete (search and directions)
-- **Directions API** – driving route and polyline
+- **Geocoding API** – search
+- **Places API (New)** or **Places API** – address/place autocomplete and nearby parking
 
 Or to serve and get a URL (e.g. for another device):
 
@@ -52,12 +51,9 @@ flutter run -d <device_id>
 
 Example: `flutter run -d emulator-5554` or `flutter run -d chrome` for web.
 
-### Driving directions
+### Parking nearby
 
-1. Tap the **car icon** in the app bar (or tap "Use as destination" on a search suggestion).
-2. **From:** Use "My location" or type a start address.
-3. **To:** Type a destination address (or it may be pre-filled).
-4. Tap **Get directions** – the driving route appears on the map as a blue line with start (green) and end (red) markers.
+When you search for a place, tap **Parking nearby** in the snackbar to see a list of parking lots and garages near that destination.
 
 ## Hiding API keys
 

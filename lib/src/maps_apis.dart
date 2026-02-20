@@ -72,20 +72,6 @@ class ParkingPlace {
   final LatLng latLng;
 }
 
-/// Directions result with route polyline and summary.
-class DirectionsResult {
-  const DirectionsResult({
-    required this.points,
-    required this.distanceText,
-    required this.durationText,
-    required this.bounds,
-  });
-  final List<LatLng> points;
-  final String distanceText;
-  final String durationText;
-  final LatLngBounds bounds;
-}
-
 /// Pittsburgh center - use as default when user location is outside US or unavailable.
 const LatLng _pittsburghCenter = LatLng(40.4406, -79.9959);
 
@@ -205,7 +191,7 @@ Future<PlaceDetails?> fetchPlaceDetails(String placeId) async {
   }
 }
 
-/// Geocode an address to "lat,lng" for more accurate directions.
+/// Geocode an address to "lat,lng".
 /// Biases toward US to avoid wrong country results (e.g. "5000 Forbes Ave" -> Pittsburgh, not Turkey).
 Future<String?> geocodeAddress(String address) async {
   if (kMapsApiKey.isEmpty || address.trim().isEmpty) return null;
@@ -272,110 +258,3 @@ Future<List<ParkingPlace>> fetchNearbyParking(LatLng location, {int radius = 800
   }
 }
 
-/// Result: either success with DirectionsResult or error message.
-typedef DirectionsResponse = ({DirectionsResult? result, String? error});
-
-Future<DirectionsResponse> fetchDrivingDirections(
-  String origin,
-  String destination,
-) async {
-  if (kMapsApiKey.isEmpty) {
-    return (result: null, error: 'API key missing. Run: dart run tool/run_web_with_key.dart');
-  }
-  final url = 'https://maps.googleapis.com/maps/api/directions/json'
-      '?origin=${Uri.encodeComponent(origin)}'
-      '&destination=${Uri.encodeComponent(destination)}'
-      '&mode=driving'
-      '&region=us'
-      '&key=$kMapsApiKey';
-  try {
-    final response = await _fetch(url);
-    if (response.statusCode != 200) {
-      return (result: null, error: 'Network error ${response.statusCode}. Enable Directions API in Google Cloud. Try removing FIREBASE_PROXY_URL from api_keys.env.');
-    }
-    Map<String, dynamic> data;
-    try {
-      data = jsonDecode(response.body) as Map<String, dynamic>;
-    } catch (_) {
-      return (result: null, error: 'Invalid response from Directions API. Try removing FIREBASE_PROXY_URL from api_keys.env.');
-    }
-    final status = data['status'] as String? ?? '';
-    if (status != 'OK') {
-      final msg = data['error_message'] as String? ?? status;
-      return (result: null, error: 'Directions: $msg. Enable Directions API in Google Cloud.');
-    }
-    final routes = data['routes'] as List<dynamic>?;
-    if (routes == null || routes.isEmpty) {
-      return (result: null, error: 'No route found. Try different addresses.');
-    }
-    final route = routes.first as Map<String, dynamic>;
-    final overview = route['overview_polyline'] as Map<String, dynamic>?;
-    final encoded = overview?['points'] as String?;
-    if (encoded == null || encoded.isEmpty) {
-      return (result: null, error: 'Route has no polyline data.');
-    }
-    final points = decodePolyline(encoded);
-    if (points.isEmpty) {
-      return (result: null, error: 'Could not decode route.');
-    }
-
-    final legs = route['legs'] as List<dynamic>?;
-    String distanceText = '';
-    String durationText = '';
-    double swLat = points.first.latitude, swLng = points.first.longitude;
-    double neLat = swLat, neLng = swLng;
-    for (final p in points) {
-      if (p.latitude < swLat) swLat = p.latitude;
-      if (p.longitude < swLng) swLng = p.longitude;
-      if (p.latitude > neLat) neLat = p.latitude;
-      if (p.longitude > neLng) neLng = p.longitude;
-    }
-    if (legs != null && legs.isNotEmpty) {
-      final leg = legs.first as Map<String, dynamic>;
-      distanceText = leg['distance']?['text'] as String? ?? '';
-      durationText = leg['duration']?['text'] as String? ?? '';
-    }
-
-    return (
-      result: DirectionsResult(
-        points: points,
-        distanceText: distanceText,
-        durationText: durationText,
-        bounds: LatLngBounds(
-          southwest: LatLng(swLat, swLng),
-          northeast: LatLng(neLat, neLng),
-        ),
-      ),
-      error: null,
-    );
-  } catch (e) {
-    return (result: null, error: 'Request failed. Enable Directions API in Google Cloud. If using a proxy, try removing FIREBASE_PROXY_URL from api_keys.env.');
-  }
-}
-
-List<LatLng> decodePolyline(String encoded) {
-  final points = <LatLng>[];
-  int index = 0;
-  int lat = 0, lng = 0;
-  while (index < encoded.length) {
-    int b, shift = 0, result = 0;
-    do {
-      b = encoded.codeUnitAt(index++) - 63;
-      result |= (b & 0x1f) << shift;
-      shift += 5;
-    } while (b >= 0x20);
-    lat += (result & 1) == 1 ? ~(result >> 1) : (result >> 1);
-
-    shift = 0;
-    result = 0;
-    do {
-      b = encoded.codeUnitAt(index++) - 63;
-      result |= (b & 0x1f) << shift;
-      shift += 5;
-    } while (b >= 0x20);
-    lng += (result & 1) == 1 ? ~(result >> 1) : (result >> 1);
-
-    points.add(LatLng(lat / 1e5, lng / 1e5));
-  }
-  return points;
-}
